@@ -1,0 +1,8 @@
+# Configuración para publicar en Render (https://render.com) con el plan gratuito.
+services:
+  - type: web
+    name: visor-bipv-sumicol
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:server --workers 1 --threads 4 --timeout 120

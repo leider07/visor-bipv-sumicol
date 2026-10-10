@@ -1,0 +1,181 @@
+"""
+Visor BIPV Sumicol · Proyecto Integra
+
+Ejecutar en el computador:
+    python app.py            ->  abrir http://127.0.0.1:8050
+
+En un servidor (producción):
+    gunicorn app:server
+"""
+import os
+
+import dash
+from dash import ALL, Input, Output, State, ctx, dcc, html, no_update
+
+import datos as D
+import paginas as P
+from componentes import (PAGINAS, barra_filtros, encabezado, meses_disponibles, pie,
+                         rango_texto, rangos_rapidos)
+
+app = dash.Dash(
+    __name__,
+    title="Visor BIPV · Proyecto Integra",
+    update_title=None,
+    suppress_callback_exceptions=True,
+    compress=True,   # comprime las respuestas (flask-compress): la página carga más rápido
+    meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"},
+               {"name": "description", "content": "Datos históricos del prototipo BIPV de Sumicol · Proyecto Integra"}],
+)
+server = app.server
+
+
+def layout():
+    meta = D.metadatos()
+    todo = {"rango": "Todo el proyecto", "ini": meta["fecha_inicio"], "fin": meta["fecha_fin"]}
+    return html.Div(className="app", children=[
+        dcc.Location(id="url"),
+        dcc.Store(id="fechas", data=todo, storage_type="session"),
+        dcc.Store(id="borrador", data=todo),
+        dcc.Download(id="descarga"),
+        encabezado(meta),
+        html.Div(id="banda", className="banda", children=html.Div(className="contenedor banda-int", children=[
+            html.Div([html.H1(id="titulo"), html.P(id="subtitulo")]),
+            barra_filtros(meta),
+        ])),
+        dcc.Loading(type="circle", color="#1b554f", delay_show=250,
+                    children=html.Main(id="contenido", className="contenido")),
+        pie(),
+    ])
+
+
+app.layout = layout
+
+
+# ------------------------------------------------------------------ navegación
+@app.callback(
+    [Output(f"nav-{i}", "className") for i in range(len(PAGINAS))]
+    + [Output("banda", "style"), Output("titulo", "children"), Output("subtitulo", "children"),
+       Output("nota-filtros", "children"), Output("grupo-cara", "className")],
+    Input("url", "pathname"),
+)
+def navegacion(ruta):
+    ruta = ruta if ruta in dict(PAGINAS) else "/"
+    clases = ["nav-link activo" if r == ruta else "nav-link" for r, _ in PAGINAS]
+    if ruta == "/":
+        return clases + [{"display": "none"}, "", "", "", "grupo-filtro"]
+    tit, sub = P.TITULOS[ruta]
+    if ruta == "/clima":
+        nota, cara_cls = "Datos filtrados de 5:00 a 19:00", "grupo-filtro atenuado"
+    else:
+        nota, cara_cls = "Datos filtrados de 5:00 a 19:00", "grupo-filtro"
+    return clases + [{}, tit, sub, nota, cara_cls]
+
+
+@app.callback(
+    Output("contenido", "children"),
+    Input("url", "pathname"), Input("fechas", "data"),
+    Input("filtro-cara", "value"), Input("filtro-vidrios", "value"),
+)
+def contenido(ruta, fechas, cara, vidrios):
+    f = {"ini": fechas["ini"], "fin": fechas["fin"], "cara": cara or "superior",
+         "vidrios": sorted(vidrios or [])}
+    if ruta == "/clima":
+        return P.clima(f)
+    if ruta == "/energia":
+        return P.energia(f)
+    if ruta == "/desempeno":
+        return P.desempeno(f)
+    return P.resumen()
+
+
+# ------------------------------------------------------------------ matriz de irradiancia (Clima)
+@app.callback(Output("matriz-tabla", "children"), Output("matriz-texto", "children"),
+              Output("btn-matriz-todo", "children"), Output("btn-matriz-todo", "style"),
+              Input("tabs-matriz", "value"), Input("fechas", "data"), Input("btn-matriz-todo", "n_clicks"))
+def matriz(cara, fechas, n_todo):
+    todo = bool(n_todo) and n_todo % 2 == 1
+    tabla, texto, boton = P.tabla_matriz(fechas["ini"], fechas["fin"], cara, todo)
+    return tabla, texto, boton, ({} if boton else {"display": "none"})
+
+
+@app.callback(Output("descarga", "data"), Input("btn-descargar-matriz", "n_clicks"),
+              State("tabs-matriz", "value"), State("fechas", "data"), prevent_initial_call=True)
+def descargar_matriz(n, cara, fechas):
+    if not n:
+        return no_update
+    texto = P.csv_matriz(fechas["ini"], fechas["fin"], cara)
+    if texto is None:
+        return no_update
+    return dcc.send_string(texto, f"irradiancia_{cara}_{fechas['ini']}_a_{fechas['fin']}.csv")
+
+
+# ------------------------------------------------------------------ selector de fechas
+@app.callback(
+    Output("pop-fechas", "style"),
+    Input("btn-fechas", "n_clicks"), Input("btn-cancelar", "n_clicks"), Input("btn-aplicar", "n_clicks"),
+    State("pop-fechas", "style"), prevent_initial_call=True,
+)
+def abrir_cerrar(_a, _b, _c, estilo):
+    if ctx.triggered_id == "btn-fechas":
+        return {} if (estilo or {}).get("display") == "none" else {"display": "none"}
+    return {"display": "none"}
+
+
+@app.callback(
+    Output("borrador", "data"), Output("fecha-ini", "value"), Output("fecha-fin", "value"),
+    Input({"type": "preset", "index": ALL}, "n_clicks"), Input({"type": "mes", "index": ALL}, "n_clicks"),
+    Input("fecha-ini", "value"), Input("fecha-fin", "value"), Input("btn-fechas", "n_clicks"),
+    State("fechas", "data"), State("borrador", "data"),
+)
+def editar_borrador(_p, _m, f_ini, f_fin, _abrir, aplicado, borrador):
+    meta = D.metadatos()
+    t = ctx.triggered_id
+    if t is None or t == "btn-fechas":           # al cargar o al abrir: parte de lo aplicado
+        b = dict(aplicado)
+        return b, b["ini"], b["fin"]
+    if isinstance(t, dict) and t.get("type") == "preset":
+        if not ctx.triggered[0]["value"]:
+            return no_update, no_update, no_update
+        lbl, a, b = rangos_rapidos(meta)[t["index"]]
+        return {"rango": lbl, "ini": a, "fin": b}, a, b
+    if isinstance(t, dict) and t.get("type") == "mes":
+        if not ctx.triggered[0]["value"]:
+            return no_update, no_update, no_update
+        for lbl, a, b, key in meses_disponibles(meta):
+            if key == t["index"]:
+                return {"rango": lbl, "ini": a, "fin": b}, a, b
+    # edición manual de fechas
+    if not f_ini or not f_fin:
+        return no_update, no_update, no_update
+    a, b = sorted([f_ini, f_fin])
+    a, b = max(a, meta["fecha_inicio"]), min(b, meta["fecha_fin"])
+    if (borrador or {}).get("ini") == a and borrador.get("fin") == b:
+        return no_update, no_update, no_update
+    return {"rango": "Personalizado", "ini": a, "fin": b}, a, b
+
+
+@app.callback(
+    Output({"type": "preset", "index": ALL}, "className"), Output({"type": "mes", "index": ALL}, "className"),
+    Input("borrador", "data"),
+)
+def resaltar(b):
+    meta = D.metadatos()
+    pres = ["preset activo" if r[0] == b["rango"] else "preset" for r in rangos_rapidos(meta)]
+    mes = ["mes activo" if m[0] == b["rango"] else "mes" for m in meses_disponibles(meta)]
+    return pres, mes
+
+
+@app.callback(Output("fechas", "data"), Input("btn-aplicar", "n_clicks"), State("borrador", "data"),
+              prevent_initial_call=True)
+def aplicar(_n, borrador):
+    return borrador
+
+
+@app.callback(Output("fechas-rango", "children"), Output("fechas-texto", "children"), Input("fechas", "data"))
+def etiqueta_fechas(f):
+    return f["rango"], rango_texto(f["ini"], f["fin"])
+
+
+if __name__ == "__main__":
+    app.run(debug=os.environ.get("DEBUG", "0") == "1", host="127.0.0.1",
+            port=int(os.environ.get("PORT", 8050)))
