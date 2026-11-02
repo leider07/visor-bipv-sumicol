@@ -43,6 +43,13 @@ TRANSMITANCIA = {
 }
 VIDRIOS = [10, 30, 40, 80]
 
+# Cambios de sensor de irradiancia en el tiempo (por cara).
+# Desde cada fecha-hora indicada la cara usa ese sensor; None = sin sensor (no hay irradiancia).
+# Cara superior: IR3 dejó de registrar el 21-jun-2026 11:35 y el 30-jul-2026 se instaló IR4 en su lugar.
+CAMBIOS_SENSOR_IRR = {
+    "superior": [("2026-06-21 11:36", None), ("2026-07-30 09:40", "IR4")],
+}
+
 # Sensores de temperatura de los vidrios (solo cara superior)
 SENSOR_TEMP_VIDRIO = {"Eload3_P2": "TS11", "Eload3_P3": "TS10", "Eload3_P1": "TS9", "Eload3_P4": "TS8"}
 # Sensor de temperatura ambiente de referencia

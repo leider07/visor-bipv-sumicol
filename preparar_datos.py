@@ -101,23 +101,36 @@ def procesar_iv(con, paneles):
 
     # Donde irradiancia_ref está vacía, se completa con la lectura del mismo
     # sensor de irradiancia en la tabla meteorológica (mismo minuto).
-    sens = [info["sensor_irr"] for info in C.CARAS.values()]
+    # Si la cara cambió de sensor (config.CAMBIOS_SENSOR_IRR), se usa el sensor vigente.
+    sens = sorted({info["sensor_irr"] for info in C.CARAS.values()}
+                  | {s for cambios in C.CAMBIOS_SENSOR_IRR.values() for _, s in cambios if s})
     met = pd.read_sql(f"SELECT timestamp, {', '.join(sens)} FROM meteorologia_data", con)
     met["ts"] = pd.to_datetime(met.timestamp, format="mixed").dt.floor("min")
     met = (met.drop(columns="timestamp").drop_duplicates("ts")
               .melt(id_vars="ts", var_name="sensor", value_name="g_met"))
-    sensor_de = paneles.set_index("panel_id").cara.map(lambda c: C.CARAS[c]["sensor_irr"])
-    iv["sensor"] = iv.panel_id.map(sensor_de)
+    cara_de = paneles.set_index("panel_id").cara
+    iv["cara"] = iv.panel_id.map(cara_de)
+    iv["sensor"] = iv.cara.map(lambda c: C.CARAS[c]["sensor_irr"])
+    iv["cambiado"] = False
+    for cara, cambios in C.CAMBIOS_SENSOR_IRR.items():
+        for desde, sensor in cambios:
+            m = (iv.cara == cara) & (iv.ts >= pd.Timestamp(desde))
+            iv.loc[m, "sensor"] = sensor
+            iv.loc[m, "cambiado"] = True
     iv = iv.merge(met, on=["ts", "sensor"], how="left")
-    faltan = iv.g.isna() & iv.g_met.notna()
+    # Con sensor cambiado se usa siempre la tabla meteorológica (irradiancia_ref apunta al sensor viejo)
+    iv.loc[iv.cambiado, "g"] = iv.loc[iv.cambiado, "g_met"]
+    faltan = ~iv.cambiado & iv.g.isna() & iv.g_met.notna()
     iv.loc[faltan, "g"] = iv.loc[faltan, "g_met"]
     log(f"  Irradiancia completada desde la tabla meteorológica en {int(faltan.sum()):,} mediciones")
-    iv = iv.drop(columns=["sensor", "g_met"])
+    sin = int((iv.cambiado & iv.sensor.isna()).sum())
+    if sin:
+        log(f"  {sin:,} mediciones sin sensor de irradiancia (periodos sin sensor en config)")
+    iv = iv.drop(columns=["sensor", "g_met", "cambiado", "cara"])
     iv["g"] = corregir_irradiancia(iv.g)
     log(f"  {len(iv):,} mediciones dentro de la ventana horaria")
 
     # Irradiancia por cara (promedio de los registros de sus 4 paneles en cada minuto)
-    cara_de = paneles.set_index("panel_id").cara
     g = iv.dropna(subset=["g"]).assign(cara=lambda x: x.panel_id.map(cara_de))
     irr_min = g.groupby(["cara", "ts"], as_index=False).g.mean()
 
@@ -130,10 +143,15 @@ def procesar_iv(con, paneles):
         partes.append(f)
         log(f"  {pid}: {len(d):,} -> {len(f):,} mediciones limpias")
     limpio = pd.concat(partes, ignore_index=True)
-    return irr_min, limpio
+    # Días-panel sin ninguna lectura de irradiancia (p. ej. periodo sin sensor): el filtro no puede
+    # validarlos, así que su energía se valida luego solo por el número de mediciones registradas.
+    sin_irr = (iv.assign(fecha=iv.ts.dt.strftime("%Y-%m-%d")).groupby(["panel_id", "fecha"]).g
+               .apply(lambda s: s.isna().all()))
+    sin_irr = sin_irr[sin_irr].reset_index()[["panel_id", "fecha"]]
+    return irr_min, limpio, sin_irr
 
 
-def tablas_paneles(limpio, con):
+def tablas_paneles(limpio, con, sin_irr):
     limpio = limpio.copy()
     limpio["fecha"] = limpio.ts.dt.strftime("%Y-%m-%d")
     limpio["hora"] = limpio.ts.dt.hour
@@ -158,9 +176,15 @@ def tablas_paneles(limpio, con):
     disp["ts"] = disp.ts.dt.strftime("%Y-%m-%d %H:%M")
 
     # Energía diaria: solo días válidos
-    en = pd.read_sql("SELECT fecha, panel_id, energia_wh FROM energia_diaria WHERE energia_wh IS NOT NULL", con)
+    en = pd.read_sql("SELECT fecha, panel_id, energia_wh, data_points FROM energia_diaria "
+                     "WHERE energia_wh IS NOT NULL", con)
     en["fecha"] = pd.to_datetime(en.fecha).dt.strftime("%Y-%m-%d")
-    en = en.merge(cuenta[cuenta.valido == 1][["panel_id", "fecha"]], on=["panel_id", "fecha"])
+    validos = cuenta[cuenta.valido == 1][["panel_id", "fecha"]]
+    sin = sin_irr.merge(en[en.data_points >= C.UMBRAL_REGISTROS_DIA][["panel_id", "fecha"]], on=["panel_id", "fecha"])
+    if len(sin):
+        log(f"  Energía: {len(sin):,} días-panel sin irradiancia validados por número de mediciones")
+    validos = pd.concat([validos, sin]).drop_duplicates()
+    en = en.merge(validos, on=["panel_id", "fecha"]).drop(columns="data_points")
     en = en.groupby(["panel_id", "fecha"], as_index=False).energia_wh.sum()
     log(f"  Energía: {len(en):,} días-panel válidos")
     return cuenta, iv_hora, disp, en
@@ -270,9 +294,9 @@ def main():
 
     con = conectar_solo_lectura(Path(a.origen))
     paneles = tabla_paneles()
-    irr_min, limpio = procesar_iv(con, paneles)
+    irr_min, limpio, sin_irr = procesar_iv(con, paneles)
     log("Calculando tablas de paneles...")
-    dias_panel, iv_hora, disp, energia = tablas_paneles(limpio, con)
+    dias_panel, iv_hora, disp, energia = tablas_paneles(limpio, con, sin_irr)
     log("Calculando irradiancia y HSP por cara...")
     irr_hora, hsp_dia = tablas_irradiancia(irr_min)
     meteo, tvid = tablas_meteo(con)

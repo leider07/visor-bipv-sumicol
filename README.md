@@ -36,6 +36,7 @@ Lee la base original **solo en lectura** (nunca la modifica) y genera `data/viso
 | Paso | Detalle |
 |---|---|
 | Irradiancia | `irradiancia_ref` corregida: `1.2240·G − 34.3052` (negativos → 0). Donde `irradiancia_ref` está vacía (mar–jun 2026) se completa con el mismo sensor (IR1/IR2/IR3) de `meteorologia_data` en el mismo minuto. |
+| Cambio de sensor | La cara superior usa IR3 hasta el 21-jun-2026 11:35 e IR4 desde el 30-jul-2026 09:40 (`CAMBIOS_SENSOR_IRR` en `config.py`); entre esas fechas no hay irradiancia, pero la energía se conserva. |
 | Ventana horaria | Solo datos de 5:00 a 19:00. |
 | Filtro de paneles | Etapa 1: límites frente a la potencia STC (potencia fantasma / panel muerto). Etapa 2: tubo estadístico Q20–Q80 por bins de 10 W/m², suavizado y ampliado. |
 | Días válidos (energía) | Un día de un panel cuenta si tiene ≥ 470 mediciones limpias. |
@@ -61,9 +62,28 @@ Visor_BIPV/
 └── assets/             # estilo.css, fuentes (fonts/), logos, fotos, capturas de la guía
 ```
 
-## Publicarla en internet (más adelante)
+## Publicarla en internet (Render, plan gratuito)
 
-La app ya está lista para servidores: `server = app.server` en `app.py` y `gunicorn` en
-`requirements.txt`. Opciones gratuitas: **Hugging Face Spaces** (Docker) o **Render** (plan free).
-Se sube esta carpeta, incluida `data/visor.db` (no hace falta subir la base original de 742 MB),
-y se usa el comando de inicio `gunicorn app:server`.
+Solo se sube esta carpeta (`Visor_BIPV`, unos 25 MB, incluida `data/visor.db`).
+La base original de 742 MB **no** se sube.
+
+1. **GitHub:** crea un repositorio nuevo (por ejemplo `visor-bipv-sumicol`) y sube el contenido de
+   esta carpeta: en la página del repositorio, *Add file → Upload files* y arrastra todos los archivos
+   y carpetas (sin la carpeta `__pycache__`).
+2. **Render:** entra a https://render.com con tu cuenta de GitHub → *New → Web Service* → elige el
+   repositorio y configura:
+   - Language: **Python 3**
+   - Build Command: `pip install -r requirements.txt`
+   - Start Command: `gunicorn app:server --workers 1 --threads 4 --timeout 120`
+   - Instance Type: **Free**
+
+   (También puedes usar *New → Blueprint*, que toma estos valores del archivo `render.yaml`.)
+3. Espera a que termine el despliegue (unos minutos). Render entrega un enlace tipo
+   `https://visor-bipv-sumicol.onrender.com`.
+
+**Actualizar la plataforma:** corre `python preparar_datos.py` en tu computador y sube a GitHub el
+`data/visor.db` nuevo (y cualquier archivo que cambie). Render vuelve a publicar automáticamente.
+
+**Límites del plan gratuito:** se "duerme" tras 15 minutos sin visitas y la siguiente visita tarda
+cerca de un minuto en despertarlo; tiene poca CPU (las páginas tardan un poco más que en el
+computador) y un límite mensual de tráfico. La app usa unos 160 MB de los 512 MB de memoria disponibles.

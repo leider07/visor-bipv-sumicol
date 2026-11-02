@@ -117,7 +117,7 @@ def resumen():
                         ("sensor-radiacion.png", "Radiación solar", "Piranómetro RK200-04",
                          "Mide la radiación solar que llega a cada cara. Hay uno en el mismo plano de cada cara."),
                         ("sensor-termistor.png", "Temperatura de los vidrios", "Termistor NTC B3950 10K de película delgada",
-                         "Sensor delgado adherido a los vidrios de la cara superior para medir su temperatura."),
+                         "Sensor delgado adherido a los vidrios para medir su temperatura."),
                         ("sensor-ambiente.png", "Temperatura ambiente", "Sensor SHT31",
                          "Mide la temperatura y la humedad del aire alrededor del prototipo."),
                         ("sensor-viento.png", "Viento", "Sensor JXCT-3001-FSFX",
